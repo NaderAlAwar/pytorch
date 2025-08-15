@@ -4,7 +4,15 @@ from torch._higher_order_ops._invoke_quant import (
     InvokeQuant,
 )
 from torch._higher_order_ops.aoti_call_delegate import aoti_call_delegate
-from torch._higher_order_ops.associative_scan import associative_scan
+
+# Conditional import based on environment variable
+# Set PYTORCH_ASSOCIATIVE_SCAN_CUDA_PARALLEL=1 to use cuda_parallel_associative_scan instead of associative_scan
+import os
+if os.getenv("PYTORCH_ASSOCIATIVE_SCAN_CUDA_PARALLEL"):
+    from torch._higher_order_ops.cuda_parallel_associative_scan import cuda_parallel_associative_scan as associative_scan
+else:
+    from torch._higher_order_ops.associative_scan import associative_scan
+
 from torch._higher_order_ops.auto_functionalize import (
     auto_functionalized,
     auto_functionalized_v2,
