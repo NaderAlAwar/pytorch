@@ -66,6 +66,13 @@ python -m pytest -s test/dynamo/test_misc.py -k "test_hash_hop" --tb=short 2>&1 
 unset LD_PRELOAD
 
 echo ""
+echo "8. Running higher_order_ops/test_cuda_parallel_associative_scan.py tests..."
+echo "   - TestCudaParallelAssociativeScan class (11 tests specifically for CUDA parallel scan)"
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libstdc++.so.6 # needed for CUDA CCCL parallel
+python -m pytest -s test/higher_order_ops/test_cuda_parallel_associative_scan.py --tb=short 2>&1 | tee -a "$TEMP_LOG"
+unset LD_PRELOAD
+
+echo ""
 echo "======================================================================"
 echo "All associative_scan tests completed!"
 echo "======================================================================"
