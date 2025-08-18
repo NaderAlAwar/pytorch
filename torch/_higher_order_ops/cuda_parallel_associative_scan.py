@@ -22,7 +22,7 @@ def initialize_scan(
     h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
     d_output = torch.empty_like(d_input)
 
-    scanner = parallel.make_exclusive_scan(d_output, d_output, combine_fn, h_init)
+    scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
     scanner(d_temp_storage, d_input, d_output, d_input.size(dim), h_init)
@@ -38,7 +38,14 @@ def associative_scan_impl(
 ) -> torch.Tensor:
 
     scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn, d_input, dim, reverse)
-    scanner(d_temp_storage, d_input, d_output, d_input.size(dim), h_init)
+
+    h_init[0] = d_input[0]
+    current_input = d_input[1:]
+    current_output = d_output[1:]
+
+    scanner(d_temp_storage, current_input, current_output, d_input.size(dim) - 1, h_init)
+
+    d_output[0] = h_init.item()
 
     return d_output
 
