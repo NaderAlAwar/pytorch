@@ -71,8 +71,7 @@ class TestCudaParallelAssociativeScan(unittest.TestCase):
                 combine_mode="pointwise"
             )
         output = f.getvalue()
-        print(output)
-        
+
         # Verify the CUDA parallel implementation was used
         self.assertIn("CUDA_PARALLEL_SCAN_USED", output)
         
@@ -102,7 +101,6 @@ class TestCudaParallelAssociativeScan(unittest.TestCase):
             )
         output = f.getvalue()
         
-        print(output)
         # Verify the CUDA parallel implementation was used
         self.assertIn("CUDA_PARALLEL_SCAN_USED", output)
         
