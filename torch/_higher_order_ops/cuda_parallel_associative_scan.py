@@ -1,9 +1,46 @@
 # mypy: allow-untyped-defs
 from typing import Callable
 
+import cuda.cccl.parallel.experimental as parallel
+
 import torch
 import torch.utils._pytree as pytree
 from torch._higher_order_ops.associative_scan import associative_scan, _fake_associative_scan
+
+
+def initialize_scan(
+    combine_fn: Callable[[pytree.PyTree, pytree.PyTree], pytree.PyTree],
+    d_input: torch.Tensor,
+    dim: int,
+    reverse: bool,
+) -> torch.Tensor:
+    """
+    This function builds cuda.cccl.parallel scan and allocates temp storage,
+    d_output, and h_init for it.
+    """
+
+    h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
+    d_output = torch.empty_like(d_input)
+
+    scanner = parallel.make_exclusive_scan(d_output, d_output, combine_fn, h_init)
+    temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
+    d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
+    scanner(d_temp_storage, d_input, d_output, d_input.size(dim), h_init)
+
+    return scanner, d_temp_storage, d_output, h_init
+
+
+def associative_scan_impl(
+    combine_fn: Callable[[pytree.PyTree, pytree.PyTree], pytree.PyTree],
+    d_input: torch.Tensor,
+    dim: int,
+    reverse: bool,
+) -> torch.Tensor:
+
+    scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn, d_input, dim, reverse)
+    scanner(d_temp_storage, d_input, d_output, d_input.size(dim), h_init)
+
+    return d_output
 
 
 def cuda_parallel_associative_scan(
@@ -50,6 +87,11 @@ def cuda_parallel_associative_scan(
         This implementation currently falls back to the standard associative_scan
         implementation to ensure semantic compatibility during development.
     """
+
+    if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1 and not reverse:
+        print("CUDA_PARALLEL_SCAN_USED: Using CUDA parallel associative scan")
+        return associative_scan_impl(combine_fn, xs, dim, reverse)
+
     # For now, fall back to the standard associative_scan implementation
     # This ensures we preserve the exact same semantics and behavior
     return associative_scan(
