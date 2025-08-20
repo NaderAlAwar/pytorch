@@ -13,6 +13,9 @@ import numpy as np
 # Import associative_scan (will use macro internally to handle implementation)
 from torch._higher_order_ops import associative_scan
 
+# Increase recompile limit to avoid warnings when benchmarking different tensor sizes
+torch._dynamo.config.recompile_limit = 64
+
 
 def associative_scan_benchmark(state: bench.State):
     """Benchmark associative_scan with different operators and data types"""
@@ -74,9 +77,9 @@ def associative_scan_benchmark(state: bench.State):
     if compile_mode in ["compiled", "dynamic"]:
         dynamic_shapes = compile_mode == "dynamic"
         scan_fn = torch.compile(scan_fn, dynamic=dynamic_shapes)
-        # Warm up the compiled function
-        _ = scan_fn(input_tensor)
-        torch.cuda.synchronize()
+
+    _ = scan_fn(input_tensor)
+    torch.cuda.synchronize()
     
     def launcher(launch: bench.Launch):
         # Perform the associative scan
