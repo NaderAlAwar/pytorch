@@ -7,9 +7,12 @@ import torch
 import torch.utils._pytree as pytree
 from torch._higher_order_ops.associative_scan import associative_scan, _fake_associative_scan
 
+# We can't pass functions directly to a custom op so we workaround with this instead
+function_registry = {}
+
 
 def initialize_scan(
-    combine_fn: Callable[[pytree.PyTree, pytree.PyTree], pytree.PyTree],
+    combine_fn_name: str,
     d_input: torch.Tensor,
     dim: int,
     reverse: bool,
@@ -26,6 +29,8 @@ def initialize_scan(
         d_input = parallel.iterators.ReverseInputIterator(d_input)
         d_output = parallel.iterators.ReverseOutputIterator(d_output)
 
+    combine_fn = function_registry[combine_fn_name]
+
     scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
@@ -34,14 +39,15 @@ def initialize_scan(
     return scanner, d_temp_storage, d_output, h_init
 
 
+@torch.library.custom_op("cccl::associative_scan", mutates_args=())
 def associative_scan_impl(
-    combine_fn: Callable[[pytree.PyTree, pytree.PyTree], pytree.PyTree],
+    combine_fn_name: str,
     d_input: torch.Tensor,
     dim: int,
     reverse: bool,
 ) -> torch.Tensor:
 
-    scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn, d_input, dim, reverse)
+    scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn_name, d_input, dim, reverse)
 
     if reverse:
         h_init[0] = d_input[-1]
@@ -60,6 +66,10 @@ def associative_scan_impl(
         d_output.data[0] = h_init.item()
 
     return d_output
+
+@associative_scan_impl.register_fake
+def _(combine_fn_name, xs, dim, reverse):
+    return torch.empty_like(xs)
 
 
 def cuda_parallel_associative_scan(
@@ -108,8 +118,17 @@ def cuda_parallel_associative_scan(
     """
 
     if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1:
+        # TODO: instead of using the name, is there a better unique identifier? What
+        # if there is a naming clash?
+        combine_fn_name = combine_fn.__name__
+        function_registry[combine_fn_name] = combine_fn # type: ignore
+        
+        # Force a graph break to ensure the registry update happens in eager mode
+        # This prevents the compilation system from capturing an empty registry
+        torch._dynamo.graph_break()
+
         # print("CUDA_PARALLEL_SCAN_USED: Using CUDA parallel associative scan")
-        return associative_scan_impl(combine_fn, xs, dim, reverse)
+        return associative_scan_impl(combine_fn_name, xs, dim, reverse)
 
     # For now, fall back to the standard associative_scan implementation
     # This ensures we preserve the exact same semantics and behavior
