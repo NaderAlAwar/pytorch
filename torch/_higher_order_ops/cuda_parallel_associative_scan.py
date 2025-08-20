@@ -22,6 +22,10 @@ def initialize_scan(
     h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
     d_output = torch.empty_like(d_input)
 
+    if reverse:
+        d_input = parallel.iterators.ReverseInputIterator(d_input)
+        d_output = parallel.iterators.ReverseOutputIterator(d_output)
+
     scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
@@ -39,13 +43,21 @@ def associative_scan_impl(
 
     scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn, d_input, dim, reverse)
 
-    h_init[0] = d_input[0]
-    current_input = d_input[1:]
-    current_output = d_output[1:]
+    if reverse:
+        h_init[0] = d_input[-1]
+        current_input_it = parallel.iterators.ReverseInputIterator(d_input[:-1])
+        current_output_it = parallel.iterators.ReverseOutputIterator(d_output[:-1])
+    else:
+        h_init[0] = d_input[0]
+        current_input_it = d_input[1:]
+        current_output_it = d_output[1:]
 
-    scanner(d_temp_storage, current_input, current_output, d_input.size(dim) - 1, h_init)
+    scanner(d_temp_storage, current_input_it, current_output_it, d_input.size(dim) - 1, h_init)
 
-    d_output[0] = h_init.item()
+    if reverse:
+        d_output.data[-1] = h_init.item()
+    else:
+        d_output.data[0] = h_init.item()
 
     return d_output
 
@@ -95,8 +107,8 @@ def cuda_parallel_associative_scan(
         implementation to ensure semantic compatibility during development.
     """
 
-    if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1 and not reverse:
-        print("CUDA_PARALLEL_SCAN_USED: Using CUDA parallel associative scan")
+    if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1:
+        # print("CUDA_PARALLEL_SCAN_USED: Using CUDA parallel associative scan")
         return associative_scan_impl(combine_fn, xs, dim, reverse)
 
     # For now, fall back to the standard associative_scan implementation
