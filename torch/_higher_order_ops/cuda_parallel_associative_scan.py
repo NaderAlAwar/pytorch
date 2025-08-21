@@ -34,7 +34,6 @@ def initialize_scan(
     scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
-    scanner(d_temp_storage, d_input, d_output, d_input.size(dim), h_init)
 
     return scanner, d_temp_storage, d_output, h_init
 
