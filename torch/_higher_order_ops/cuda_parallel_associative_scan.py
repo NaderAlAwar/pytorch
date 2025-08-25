@@ -23,26 +23,29 @@ def initialize_scan(
     d_output, and h_init for it.
     """
 
+    dtype = d_input.dtype
     d_output = torch.empty_like(d_input)
     if reverse:
-        d_input = parallel.iterators.ReverseInputIterator(d_input)
-        d_output = parallel.iterators.ReverseOutputIterator(d_output)
+        d_input = parallel.ReverseInputIterator(d_input)
+        d_output_it = parallel.ReverseOutputIterator(d_output[:-1])
+    else:
+        d_output_it = d_output
 
-    storage_cache_key = (size, d_input.dtype, combine_fn_name)
+    storage_cache_key = (size, dtype, combine_fn_name, reverse)
     if storage_cache_key in temp_storage_registry:
         scanner, d_temp_storage, h_init = temp_storage_registry[storage_cache_key]
-        return scanner, d_temp_storage, h_init, d_output
+        return scanner, d_temp_storage, h_init, d_output, d_output_it
 
-    h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
+    h_init = torch.zeros(1, dtype=dtype).numpy()
 
     combine_fn = function_registry[combine_fn_name]
 
-    scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
-    temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
+    scanner = parallel.make_inclusive_scan(d_input, d_output_it, combine_fn, h_init)
+    temp_storage_size = scanner(None, d_input, d_output_it, size, h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
     temp_storage_registry[storage_cache_key] = (scanner, d_temp_storage, h_init)
     
-    return scanner, d_temp_storage, h_init, d_output
+    return scanner, d_temp_storage, h_init, d_output, d_output_it
 
 
 @torch.library.custom_op("cccl::associative_scan", mutates_args=())
@@ -54,12 +57,12 @@ def associative_scan_impl(
 ) -> torch.Tensor:
 
     size = d_input.shape[0]
-    scanner, d_temp_storage, h_init, d_output = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
+    scanner, d_temp_storage, h_init, d_output, d_output_it = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
 
     if reverse:
         first_elem = d_input[-1]
-        current_input_it = parallel.iterators.ReverseInputIterator(d_input[:-1])
-        current_output_it = parallel.iterators.ReverseOutputIterator(d_output[:-1])
+        current_input_it = parallel.ReverseInputIterator(d_input[:-1])
+        current_output_it = d_output_it # already a reverse iterator
     else:
         first_elem = d_input[0]
         current_input_it = d_input[1:]
