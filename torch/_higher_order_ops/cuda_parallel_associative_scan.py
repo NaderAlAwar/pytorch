@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import time
 from typing import Callable
 
 import cuda.cccl.parallel.experimental as parallel
@@ -9,10 +10,11 @@ from torch._higher_order_ops.associative_scan import associative_scan, _fake_ass
 
 # We can't pass functions directly to a custom op so we workaround with this instead
 function_registry = {}
-
+temp_storage_registry = {}
 
 def initialize_scan(
     combine_fn_name: str,
+    size: int,
     d_input: torch.Tensor,
     dim: int,
     reverse: bool,
@@ -22,20 +24,26 @@ def initialize_scan(
     d_output, and h_init for it.
     """
 
-    h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
     d_output = torch.empty_like(d_input)
-
     if reverse:
         d_input = parallel.iterators.ReverseInputIterator(d_input)
         d_output = parallel.iterators.ReverseOutputIterator(d_output)
+
+    storage_cache_key = (size, d_input.dtype, combine_fn_name)
+    if storage_cache_key in temp_storage_registry:
+        scanner, d_temp_storage, h_init = temp_storage_registry[storage_cache_key]
+        return scanner, d_temp_storage, h_init, d_output
+
+    h_init = torch.zeros(1, dtype=d_input.dtype).numpy()
 
     combine_fn = function_registry[combine_fn_name]
 
     scanner = parallel.make_inclusive_scan(d_output, d_output, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output, d_input.size(dim), h_init)
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
-
-    return scanner, d_temp_storage, d_output, h_init
+    temp_storage_registry[storage_cache_key] = (scanner, d_temp_storage, h_init)
+    
+    return scanner, d_temp_storage, h_init, d_output
 
 
 @torch.library.custom_op("cccl::associative_scan", mutates_args=())
@@ -46,23 +54,25 @@ def associative_scan_impl(
     reverse: bool,
 ) -> torch.Tensor:
 
-    scanner, d_temp_storage, d_output, h_init = initialize_scan(combine_fn_name, d_input, dim, reverse)
+    size = d_input.shape[0]
+    scanner, d_temp_storage, h_init, d_output = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
 
     if reverse:
-        h_init[0] = d_input[-1]
+
+        first_elem = d_input[-1]
         current_input_it = parallel.iterators.ReverseInputIterator(d_input[:-1])
         current_output_it = parallel.iterators.ReverseOutputIterator(d_output[:-1])
     else:
-        h_init[0] = d_input[0]
+        first_elem = d_input[0]
         current_input_it = d_input[1:]
         current_output_it = d_output[1:]
-
-    scanner(d_temp_storage, current_input_it, current_output_it, d_input.size(dim) - 1, h_init)
+    h_init[0] = first_elem
+    scanner(d_temp_storage, current_input_it, current_output_it, size - 1, h_init)
 
     if reverse:
-        d_output.data[-1] = h_init.item()
+        d_output.data[-1] = first_elem
     else:
-        d_output.data[0] = h_init.item()
+        d_output.data[0] = first_elem
 
     return d_output
 
