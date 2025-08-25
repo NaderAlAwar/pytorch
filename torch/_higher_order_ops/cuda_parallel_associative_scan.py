@@ -1,5 +1,4 @@
 # mypy: allow-untyped-defs
-import time
 from typing import Callable
 
 import cuda.cccl.parallel.experimental as parallel
@@ -58,7 +57,6 @@ def associative_scan_impl(
     scanner, d_temp_storage, h_init, d_output = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
 
     if reverse:
-
         first_elem = d_input[-1]
         current_input_it = parallel.iterators.ReverseInputIterator(d_input[:-1])
         current_output_it = parallel.iterators.ReverseOutputIterator(d_output[:-1])
@@ -66,6 +64,7 @@ def associative_scan_impl(
         first_elem = d_input[0]
         current_input_it = d_input[1:]
         current_output_it = d_output[1:]
+
     h_init[0] = first_elem
     scanner(d_temp_storage, current_input_it, current_output_it, size - 1, h_init)
 
