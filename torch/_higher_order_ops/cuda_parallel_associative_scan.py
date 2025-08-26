@@ -11,6 +11,13 @@ from torch._higher_order_ops.associative_scan import associative_scan, _fake_ass
 function_registry = {}
 temp_storage_registry = {}
 
+# Check for optimized allocation at module load time
+try:
+    import torch._C._dynamo.guards as guards
+    _HAS_OPTIMIZED_ALLOC = hasattr(guards, '_empty_strided_cuda')
+except ImportError:
+    _HAS_OPTIMIZED_ALLOC = False
+
 def initialize_scan(
     combine_fn_name: str,
     size: int,
@@ -31,18 +38,25 @@ def initialize_scan(
     else:
         d_output_it = d_output
 
-    storage_cache_key = (size, dtype, combine_fn_name, reverse)
+    storage_cache_key = (size, dtype, combine_fn_name, reverse, torch.cuda.current_stream())
     if storage_cache_key in temp_storage_registry:
         scanner, d_temp_storage, h_init = temp_storage_registry[storage_cache_key]
         return scanner, d_temp_storage, h_init, d_output, d_output_it
 
-    h_init = torch.zeros(1, dtype=dtype).numpy()
+    h_init = torch.empty(1, dtype=dtype).numpy()
 
     combine_fn = function_registry[combine_fn_name]
 
     scanner = parallel.make_inclusive_scan(d_input, d_output_it, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output_it, size, h_init)
-    d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8).cuda()
+
+    # Use optimized allocation (checked at module load)
+    if _HAS_OPTIMIZED_ALLOC:
+        d_temp_storage = guards._empty_strided_cuda((temp_storage_size,), (1,), torch.uint8)
+    else:
+        # Fallback to standard allocation
+        d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8, device="cuda")
+
     temp_storage_registry[storage_cache_key] = (scanner, d_temp_storage, h_init)
     
     return scanner, d_temp_storage, h_init, d_output, d_output_it
