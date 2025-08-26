@@ -17,6 +17,14 @@ from torch._higher_order_ops import associative_scan
 torch._dynamo.config.recompile_limit = 64
 
 
+def as_torch_cuda_Stream(
+    cs: bench.CudaStream, dev: int | None
+) -> torch.cuda.ExternalStream:
+    return torch.cuda.ExternalStream(
+        stream_ptr=cs.addressof(), device=torch.cuda.device(dev)
+    )
+
+
 def associative_scan_benchmark(state: bench.State):
     """Benchmark associative_scan with different operators and data types"""
     n_elems = state.get_int64("numElems")
@@ -49,16 +57,18 @@ def associative_scan_benchmark(state: bench.State):
     state.add_summary("operator", operator)
     state.add_summary("compile", compile_mode)
 
-    # Create input tensor on CUDA
-    device = torch.device(f"cuda:{state.get_device()}")
-    
-    # Initialize with small positive values for multiplication to avoid overflow/underflow
-    if operator == "mul":
-        # Use values close to 1.0 to avoid numerical issues
-        input_tensor = torch.ones(n_elems, dtype=dtype, device=device) + torch.randn(n_elems, dtype=dtype, device=device) * 0.1
-    else:
-        # For addition, use random values
-        input_tensor = torch.randn(n_elems, dtype=dtype, device=device)
+    dev_id = state.get_device()
+    tc_s = as_torch_cuda_Stream(state.get_stream(), dev_id)
+    device = torch.device(f"cuda:{dev_id}")
+
+    with torch.cuda.device(device), torch.cuda.stream(tc_s):
+            # Initialize with small positive values for multiplication to avoid overflow/underflow
+            if operator == "mul":
+                # Use values close to 1.0 to avoid numerical issues
+                input_tensor = torch.ones(n_elems, dtype=dtype, device=device) + torch.randn(n_elems, dtype=dtype, device=device) * 0.1
+            else:
+                # For addition, use random values
+                input_tensor = torch.randn(n_elems, dtype=dtype, device=device)
     
     # Make sure tensor is contiguous for optimal performance
     input_tensor = input_tensor.contiguous()
@@ -82,11 +92,10 @@ def associative_scan_benchmark(state: bench.State):
     torch.cuda.synchronize()
     
     def launcher(launch: bench.Launch):
-        # Perform the associative scan
-        result = scan_fn(input_tensor)
-        # The result computation is already synchronous
-    
-    # Use sync=True since associative_scan synchronizes internally
+        tc_s = as_torch_cuda_Stream(launch.get_stream(), dev_id)
+        with torch.cuda.device(device), torch.cuda.stream(tc_s):
+            scan_fn(input_tensor)
+
     state.exec(launcher, sync=True)
 
 
