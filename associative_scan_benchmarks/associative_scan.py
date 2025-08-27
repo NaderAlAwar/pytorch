@@ -1,4 +1,5 @@
 import sys
+import os
 
 # This is not used directly here, but removing this results in a build error.
 # Something about the import order of cuda.cccl.parallel.experimental and torch
@@ -14,7 +15,7 @@ import numpy as np
 from torch._higher_order_ops import associative_scan
 
 # Increase recompile limit to avoid warnings when benchmarking different tensor sizes
-torch._dynamo.config.recompile_limit = 64
+torch._dynamo.config.recompile_limit = 100
 
 
 def as_torch_cuda_Stream(
@@ -34,6 +35,7 @@ def associative_scan_benchmark(state: bench.State):
     
     # Convert dtype string to torch dtype
     dtype_map = {
+        "float16": torch.float16,
         "float32": torch.float32,
         "float64": torch.float64
     }
@@ -45,11 +47,17 @@ def associative_scan_benchmark(state: bench.State):
     
     def mul_op(x, y):
         return x * y
-    
-    op_map = {
-        "add": add_op,
-        "mul": mul_op
-    }
+
+    if "PYTORCH_ASSOCIATIVE_SCAN_CUDA_PARALLEL" in os.environ:
+        op_map = {
+            "add": parallel.OpKind.PLUS,
+            "mul": parallel.OpKind.MULTIPLIES
+        }
+    else:
+        op_map = {
+            "add": add_op,
+            "mul": mul_op
+        }
 
     combine_fn = op_map[operator]
 
@@ -102,7 +110,7 @@ def associative_scan_benchmark(state: bench.State):
 if __name__ == "__main__":
     b = bench.register(associative_scan_benchmark)
     b.add_int64_power_of_two_axis("numElems", range(12, 29, 4))  # 2^12, 2^16, 2^20, 2^24, 2^28
-    b.add_string_axis("dtype", ["float32", "float64"])
+    b.add_string_axis("dtype", ["float16", "float32", "float64"])
     b.add_string_axis("operator", ["add", "mul"])
     b.add_string_axis("compile", ["eager", "compiled", "dynamic"])
     bench.run_all_benchmarks(sys.argv)
