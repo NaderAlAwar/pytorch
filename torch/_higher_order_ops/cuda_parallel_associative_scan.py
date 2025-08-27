@@ -156,7 +156,11 @@ def cuda_parallel_associative_scan(
     if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1:
         # TODO: instead of using the name, is there a better unique identifier? What
         # if there is a naming clash?
-        combine_fn_name = combine_fn.__name__
+        try:
+            combine_fn_name = combine_fn.__name__
+        except:
+            combine_fn_name = str(combine_fn) # This is used for well known ops
+
         function_registry[combine_fn_name] = combine_fn # type: ignore
         
         # Force a graph break to ensure the registry update happens in eager mode
