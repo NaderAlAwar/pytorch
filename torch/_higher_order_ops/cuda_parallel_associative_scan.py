@@ -46,7 +46,7 @@ def initialize_scan(
     else:
         d_output_it = d_output
 
-    storage_cache_key = (size, dtype, combine_fn_name, reverse, torch.cuda.current_stream(), torch.cuda.current_device())
+    storage_cache_key = (size, dtype, combine_fn_name, reverse, stream, torch.cuda.current_device())
     if storage_cache_key in temp_storage_registry:
         scanner, d_temp_storage, h_init, stream_wrapper = temp_storage_registry[storage_cache_key]
         return scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper
