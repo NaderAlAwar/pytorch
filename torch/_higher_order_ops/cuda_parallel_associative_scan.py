@@ -31,7 +31,6 @@ def initialize_scan(
     d_input: torch.Tensor,
     dim: int,
     reverse: bool,
-    stream
 ) -> torch.Tensor:
     """
     This function builds cuda.cccl.parallel scan and allocates temp storage,
@@ -46,6 +45,7 @@ def initialize_scan(
     else:
         d_output_it = d_output
 
+    stream = torch.cuda.current_stream()
     storage_cache_key = (size, dtype, combine_fn_name, reverse, stream, torch.cuda.current_device())
     if storage_cache_key in temp_storage_registry:
         scanner, d_temp_storage, h_init, stream_wrapper = temp_storage_registry[storage_cache_key]
@@ -80,28 +80,25 @@ def associative_scan_impl(
 ) -> torch.Tensor:
 
     size = d_input.shape[0]
-    stream = torch.cuda.current_stream()
-    with torch.cuda.stream(stream):
-        scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper = initialize_scan(combine_fn_name, size, d_input, dim, reverse, stream)
+    scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
+    if reverse:
+        first_elem = d_input[-1]
+        current_input_it = parallel.ReverseInputIterator(d_input[:-1])
+        current_output_it = d_output_it # already a reverse iterator
+    else:
+        first_elem = d_input[0]
+        current_input_it = d_input[1:]
+        current_output_it = d_output[1:]
 
-        if reverse:
-            first_elem = d_input[-1]
-            current_input_it = parallel.ReverseInputIterator(d_input[:-1])
-            current_output_it = d_output_it # already a reverse iterator
-        else:
-            first_elem = d_input[0]
-            current_input_it = d_input[1:]
-            current_output_it = d_output[1:]
+    h_init[0] = first_elem
+    scanner(d_temp_storage, current_input_it, current_output_it, size - 1, h_init, stream_wrapper)
 
-        h_init[0] = first_elem
-        scanner(d_temp_storage, current_input_it, current_output_it, size - 1, h_init, stream_wrapper)
+    if reverse:
+        d_output.data[-1] = first_elem
+    else:
+        d_output.data[0] = first_elem
 
-        if reverse:
-            d_output.data[-1] = first_elem
-        else:
-            d_output.data[0] = first_elem
-
-        return d_output
+    return d_output
 
 @associative_scan_impl.register_fake
 def _(combine_fn_name, xs, dim, reverse):
