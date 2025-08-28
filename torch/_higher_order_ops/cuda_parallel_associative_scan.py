@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import time
 from typing import Callable
 
 import cuda.cccl.parallel.experimental as parallel
@@ -10,13 +11,6 @@ from torch._higher_order_ops.associative_scan import associative_scan, _fake_ass
 # We can't pass functions directly to a custom op so we workaround with this instead
 function_registry = {}
 temp_storage_registry = {}
-
-# Check for optimized allocation at module load time
-try:
-    import torch._C._dynamo.guards as guards
-    _HAS_OPTIMIZED_ALLOC = hasattr(guards, '_empty_strided_cuda')
-except ImportError:
-    _HAS_OPTIMIZED_ALLOC = False
 
 class StreamWrapper:
     def __init__(self, stream):
@@ -46,7 +40,9 @@ def initialize_scan(
         d_output_it = d_output
 
     stream = torch.cuda.current_stream()
-    storage_cache_key = (size, dtype, combine_fn_name, reverse, stream, torch.cuda.current_device())
+    device = torch.cuda.current_device()
+
+    storage_cache_key = (size, dtype, combine_fn_name, reverse, device)
     if storage_cache_key in temp_storage_registry:
         scanner, d_temp_storage, h_init, stream_wrapper = temp_storage_registry[storage_cache_key]
         return scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper
@@ -59,12 +55,7 @@ def initialize_scan(
     scanner = parallel.make_inclusive_scan(d_input, d_output_it, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output_it, size, h_init, stream_wrapper)
 
-    # Use optimized allocation (checked at module load)
-    if _HAS_OPTIMIZED_ALLOC:
-        d_temp_storage = guards._empty_strided_cuda((temp_storage_size,), (1,), torch.uint8)
-    else:
-        # Fallback to standard allocation
-        d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8, device="cuda")
+    d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8, device=device)
 
     temp_storage_registry[storage_cache_key] = (scanner, d_temp_storage, h_init, stream_wrapper)
     
