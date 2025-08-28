@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 import time
+from enum import Enum
 from typing import Callable
 
 import cuda.cccl.parallel.experimental as parallel
@@ -13,14 +14,15 @@ function_registry = {}
 temp_storage_registry = {}
 
 class StreamWrapper:
+    __slots__ = ["stream_protocol"]
     def __init__(self, stream):
-        self.stream_ptr = stream.cuda_stream
+        self.stream_protocol = (0, stream.cuda_stream)
 
     def __cuda_stream__(self):
-        return (0, self.stream_ptr)
+        return self.stream_protocol
 
 def initialize_scan(
-    combine_fn_name: str,
+    combine_fn_key: int,
     size: int,
     d_input: torch.Tensor,
     dim: int,
@@ -40,21 +42,22 @@ def initialize_scan(
         d_output_it = d_output
 
     stream = torch.cuda.current_stream()
-    device = torch.cuda.current_device()
 
-    storage_cache_key = (size, dtype, combine_fn_name, reverse, device)
-    if storage_cache_key in temp_storage_registry:
-        scanner, d_temp_storage, h_init, stream_wrapper = temp_storage_registry[storage_cache_key]
+    storage_cache_key = (size, dtype, combine_fn_key, reverse, stream)
+    cached_result = temp_storage_registry.get(storage_cache_key)
+    if cached_result is not None:
+        scanner, d_temp_storage, h_init, stream_wrapper = cached_result
         return scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper
 
     h_init = torch.empty(1, dtype=dtype).numpy()
 
-    combine_fn = function_registry[combine_fn_name]
+    combine_fn = function_registry[combine_fn_key]
     stream_wrapper = StreamWrapper(stream)
 
     scanner = parallel.make_inclusive_scan(d_input, d_output_it, combine_fn, h_init)
     temp_storage_size = scanner(None, d_input, d_output_it, size, h_init, stream_wrapper)
 
+    device = torch.cuda.current_device()
     d_temp_storage = torch.empty(temp_storage_size, dtype=torch.uint8, device=device)
 
     temp_storage_registry[storage_cache_key] = (scanner, d_temp_storage, h_init, stream_wrapper)
@@ -64,30 +67,30 @@ def initialize_scan(
 
 @torch.library.custom_op("cccl::associative_scan", mutates_args=())
 def associative_scan_impl(
-    combine_fn_name: str,
+    combine_fn_key: int,
     d_input: torch.Tensor,
     dim: int,
     reverse: bool,
 ) -> torch.Tensor:
 
     size = d_input.shape[0]
-    scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper = initialize_scan(combine_fn_name, size, d_input, dim, reverse)
+    scanner, d_temp_storage, h_init, d_output, d_output_it, stream_wrapper = initialize_scan(combine_fn_key, size, d_input, dim, reverse)
+
     if reverse:
-        first_elem = d_input[-1]
+        first_elem_index = -1
         current_input_it = parallel.ReverseInputIterator(d_input[:-1])
         current_output_it = d_output_it # already a reverse iterator
     else:
-        first_elem = d_input[0]
+        first_elem_index = 0
         current_input_it = d_input[1:]
         current_output_it = d_output[1:]
+
+    first_elem = d_input[first_elem_index]
 
     h_init[0] = first_elem
     scanner(d_temp_storage, current_input_it, current_output_it, size - 1, h_init, stream_wrapper)
 
-    if reverse:
-        d_output.data[-1] = first_elem
-    else:
-        d_output.data[0] = first_elem
+    d_output.data[first_elem_index] = first_elem
 
     return d_output
 
@@ -142,21 +145,18 @@ def cuda_parallel_associative_scan(
     """
 
     if combine_mode == "pointwise" and isinstance(xs, torch.Tensor) and xs.device.type == "cuda" and xs.is_contiguous() and xs.ndim == 1:
-        # TODO: instead of using the name, is there a better unique identifier? What
-        # if there is a naming clash?
-        try:
-            combine_fn_name = combine_fn.__name__
-        except:
-            combine_fn_name = str(combine_fn) # This is used for well known ops
-
-        function_registry[combine_fn_name] = combine_fn # type: ignore
+        if isinstance(combine_fn, Enum):
+            combine_fn_key = combine_fn
+        else:
+            combine_fn_key = hash(combine_fn)
+        function_registry[combine_fn_key] = combine_fn # type: ignore
         
         # Force a graph break to ensure the registry update happens in eager mode
         # This prevents the compilation system from capturing an empty registry
         torch._dynamo.graph_break()
 
         # print("CUDA_PARALLEL_SCAN_USED: Using CUDA parallel associative scan")
-        return associative_scan_impl(combine_fn_name, xs, dim, reverse)
+        return associative_scan_impl(combine_fn_key, xs, dim, reverse)
 
     # For now, fall back to the standard associative_scan implementation
     # This ensures we preserve the exact same semantics and behavior
