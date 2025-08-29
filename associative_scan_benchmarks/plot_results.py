@@ -61,7 +61,7 @@ def create_speedup_plot(base_data, cccl_data, base_mode, title, filename):
     
     # Prepare data arrays
     x_positions = np.arange(len(sizes))
-    width = 0.25  # Wider bars for 3 bars per group
+    width = 0.25  # Bar width for 3 bars per group
     
     # Arrays to store speedup data
     speedups_f16 = []
@@ -89,7 +89,7 @@ def create_speedup_plot(base_data, cccl_data, base_mode, title, filename):
         speedups_f64.append(speedup_f64)
     
     # Create the plot
-    fig, ax = plt.subplots(figsize=(15, 8))
+    fig, ax = plt.subplots(figsize=(8, 6))
     
     # Define colors for the 3 bars per group
     colors = {
@@ -124,12 +124,14 @@ def create_speedup_plot(base_data, cccl_data, base_mode, title, filename):
     ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.7, linewidth=1)
     
     # Customize the plot
-    ax.set_xlabel('Input Size (Number of Elements)', fontsize=12)
-    ax.set_ylabel('CCCL Speedup (PyTorch time / CCCL time)', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xlabel('Input Size (Number of Elements)', fontsize=16)
+    ax.set_ylabel('CCCL Speedup (PyTorch time / CCCL time)', fontsize=16)
+    ax.set_title(title, fontsize=18, fontweight='bold')
     ax.set_xticks(x_positions)
-    ax.set_xticklabels([f'2^{int(np.log2(size))}' for size in sizes], rotation=45)
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.set_xticklabels([f'2^{int(np.log2(size))}' for size in sizes], rotation=45, fontsize=14)
+    ax.tick_params(axis='y', labelsize=14)
+    ax.set_ylim(0, 5)
+    ax.legend(loc='upper left', fontsize=14)
     ax.grid(True, alpha=0.3)
     
     # Add value labels on bars
@@ -140,19 +142,19 @@ def create_speedup_plot(base_data, cccl_data, base_mode, title, filename):
             # Add labels for each bar
             if speedups_f16[i] is not None:
                 ax.text(x_base - width, speedups_f16[i],
-                       f'{speedups_f16[i]:.2f}', ha='center', va='bottom', fontsize=9, rotation=90)
+                       f'{speedups_f16[i]:.2f}', ha='center', va='bottom', fontsize=12, rotation=90)
             
             if speedups_f32[i] is not None:
                 ax.text(x_base, speedups_f32[i],
-                       f'{speedups_f32[i]:.2f}', ha='center', va='bottom', fontsize=9, rotation=90)
+                       f'{speedups_f32[i]:.2f}', ha='center', va='bottom', fontsize=12, rotation=90)
             
             if speedups_f64[i] is not None:
                 ax.text(x_base + width, speedups_f64[i],
-                       f'{speedups_f64[i]:.2f}', ha='center', va='bottom', fontsize=9, rotation=90)
+                       f'{speedups_f64[i]:.2f}', ha='center', va='bottom', fontsize=12, rotation=90)
     
     add_value_labels_on_bars()
     
-    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.15)
     plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close(fig)  # Close figure to free memory
     
